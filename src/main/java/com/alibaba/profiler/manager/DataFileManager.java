@@ -1,14 +1,14 @@
 package com.alibaba.profiler.manager;
 
+import com.alibaba.profiler.config.QueueConfig;
+import com.alibaba.profiler.util.LogUtil;
+
 import java.io.File;
 import java.io.FilenameFilter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NavigableSet;
 import java.util.TreeSet;
-
-import com.alibaba.profiler.config.QueueConfig;
-import com.alibaba.profiler.util.LogUtil;
 
 /**
  * DataFileManager
@@ -129,6 +129,7 @@ public class DataFileManager {
             if (!new File(deletePath).delete()) {
                 LogUtil.error("Delete the old file " + deletePath + " failed.");
             } else {
+                LogUtil.info("success delete file:"+deletePath);
                 deleteList.add(deletePath);
             }
         }

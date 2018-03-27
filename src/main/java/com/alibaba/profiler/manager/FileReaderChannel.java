@@ -1,21 +1,20 @@
 package com.alibaba.profiler.manager;
 
-import java.io.File;
-import java.io.RandomAccessFile;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-
-import com.alibaba.profiler.config.QueueConfig;
 import com.alibaba.profiler.Task;
-import com.alibaba.profiler.queue.QueueChannel;
+import com.alibaba.profiler.config.QueueConfig;
 import com.alibaba.profiler.queue.MessageWrapper;
+import com.alibaba.profiler.queue.QueueChannel;
 import com.alibaba.profiler.util.LogUtil;
 import com.alibaba.profiler.util.SleepUtil;
+
+import java.io.File;
+import java.io.RandomAccessFile;
+import java.lang.reflect.Method;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.concurrent.*;
 
 /**
  * Description:read data to cache queue
@@ -23,34 +22,45 @@ import com.alibaba.profiler.util.SleepUtil;
  * @author wxy
  */
 public class FileReaderChannel implements Task {
-    private final static int NO_DATA_WAIT_TIMEOUT = 2 * 1000;
-    private final static int OPEN_CHANNEL_RETRY_COUNT = 3;
+    private final static int NO_DATA_WAIT_TIMEOUT       = 2 * 1000;
+
+    private final static int OPEN_CHANNEL_RETRY_COUNT   = 3;
+
     private final static int OPEN_CHANNEL_RETRY_TIMEOUT = 5;
 
     private String readFile;
-    private int readPos;
-    private boolean stopped = false;
+
+    private int    readPos;
+
+    private boolean stopped            = false;
+
     private boolean firstMessageInFile = false;
-    private final ExecutorService readerTask;
-    private final QueueChannel queueChannel;
-    private MappedByteBuffer readMappedByteBuffer;
-    private FileChannel readFileChannel;
+
+    private final ExecutorService  readerTask;
+
+    private final QueueChannel     queueChannel;
+
+    private       MappedByteBuffer readMappedByteBuffer;
+
+    private       FileChannel      readFileChannel;
 
     private QueueConfig queueConfig = QueueConfig.getInstance();
+
 
     public FileReaderChannel(QueueChannel queueChannel) {
         this.queueChannel = queueChannel;
         //create a single reader thread
-        this.readerTask = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-            new LinkedBlockingDeque<Runnable>(1), new ThreadFactory() {
-            @Override
-            public Thread newThread(Runnable r) {
-                return new Thread(r, "FileReaderChannel-ReaderTask-");
-            }
-        });
+        this.readerTask = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingDeque<Runnable>(1),
+                                                 new ThreadFactory() {
+                                                     @Override
+                                                     public Thread newThread(Runnable r) {
+                                                         return new Thread(r, "FileReaderChannel-ReaderTask-");
+                                                     }
+                                                 });
 
         initFirstDataFileChannel();
     }
+
 
     private void initFirstDataFileChannel() {
         readPos = queueChannel.getMetaManager().get().getReadPos();
@@ -82,6 +92,7 @@ public class FileReaderChannel implements Task {
         }
     }
 
+
     private void loadMessages() {
 
         if (readFile == null) {
@@ -95,12 +106,17 @@ public class FileReaderChannel implements Task {
         }
         while (!stopped) {
             openChannel();
-            if (isStop()) { return; }
+            if (isStop()) {
+                return;
+            }
             loadFileData();
-            if (isStop()) { return; }
+            if (isStop()) {
+                return;
+            }
             readNextFile();
         }
     }
+
 
     private void readNextFile() {
         DataFileManager dataFileManager = queueChannel.getDataFileManager();
@@ -111,6 +127,7 @@ public class FileReaderChannel implements Task {
         if (readFileChannel != null) {
             try {
                 readMappedByteBuffer.force();
+                unmap(readMappedByteBuffer);//add by wangqiang ,fix file delete fail bug
                 readFileChannel.close();
             } catch (Exception e) {
                 LogUtil.error("ReadNextFile error. " + e);
@@ -120,6 +137,37 @@ public class FileReaderChannel implements Task {
         readPos = 0;
         LogUtil.info("Read next file to " + readFile + ". ");
     }
+
+
+    public static final void unmap(final MappedByteBuffer buffer) {
+        if (null == buffer) {
+            return;
+        }
+        AccessController.doPrivileged(new PrivilegedAction<Object>() {
+            public Object run() {
+                try {
+                    final Method cleanerMethod = buffer.getClass().getMethod("cleaner");
+                    if (null == cleanerMethod) {
+                        return null;
+                    }
+                    cleanerMethod.setAccessible(true);
+                    final Object cleanerObj = cleanerMethod.invoke(buffer);
+                    if (null == cleanerObj) {
+                        return null;
+                    }
+                    final Method cleanMethod = cleanerObj.getClass().getMethod("clean");
+                    if (null == cleanMethod) {
+                        return null;
+                    }
+                    cleanMethod.invoke(cleanerObj);
+                } catch (final Throwable e) {
+                    LogUtil.error(""+e);
+                }
+                return null;
+            }
+        });
+    }
+
 
     private void openChannel() {
         Throwable t = null;
@@ -138,9 +186,11 @@ public class FileReaderChannel implements Task {
         throw new RuntimeException("Open read file channel failed.", t);
     }
 
+
     /**
      * get message length
-     * @return  message length
+     *
+     * @return message length
      */
     private int getMessageLength() {
         return (readMappedByteBuffer.remaining() < 4) ? 0 : readMappedByteBuffer.getInt();
@@ -189,9 +239,11 @@ public class FileReaderChannel implements Task {
         }*/
     }
 
+
     private boolean isStop() {
         return (Thread.interrupted() || stopped);
     }
+
 
     private boolean messageBody(int length) {
         if (length > queueConfig.getMessageLimit()) {
@@ -206,9 +258,9 @@ public class FileReaderChannel implements Task {
         return true;
     }
 
+
     private void messageEnqueue(byte[] content) {
-        MessageWrapper messageWrapper = new MessageWrapper(content, firstMessageInFile
-            , readPos, readFile);
+        MessageWrapper messageWrapper = new MessageWrapper(content, firstMessageInFile, readPos, readFile);
         firstMessageInFile = false;
         try {
             queueChannel.getQueue().put(messageWrapper);
@@ -216,6 +268,7 @@ public class FileReaderChannel implements Task {
             LogUtil.error("Message enqueue failed. " + e);
         }
     }
+
 
     @Override
     public void start() {
@@ -232,6 +285,7 @@ public class FileReaderChannel implements Task {
             }
         });
     }
+
 
     @Override
     public void stop() {
